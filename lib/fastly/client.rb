@@ -1,5 +1,8 @@
+# frozen_string_literal: true
+
 require 'json'
 require 'cgi'
+require 'concurrent'
 require 'net/http' # also requires uri
 require 'openssl'
 
@@ -9,28 +12,17 @@ class Fastly
 
     DEFAULT_URL = 'https://api.fastly.com'.freeze
 
-    attr_accessor :http, :api_key, :user, :password, :cookie, :customer
+    attr_accessor :api_key, :base_url, :debug, :user, :password, :cookie, :customer
 
     def initialize(opts)
-      @api_key  = opts.fetch(:api_key, nil)
-      @user     = opts.fetch(:user, nil)
-      @password = opts.fetch(:password, nil)
-      @customer = opts.fetch(:customer, nil)
-      @oldpurge = opts.fetch(:use_old_purge_method, false)
-
-      base = opts.fetch(:base_url, DEFAULT_URL)
-      uri  = URI.parse(base)
-
-      @http = Net::HTTP.new(uri.host, uri.port, :ENV, nil, nil, nil)
-
-      # handle TLS connections outside of development
-      @http.verify_mode = OpenSSL::SSL::VERIFY_PEER
-      @http.use_ssl = uri.scheme.downcase == 'https'
-
-      # debug http interactions if specified
-      @http.set_debug_output(opts[:debug]) if opts[:debug]
-
-      @http.start
+      @api_key            = opts.fetch(:api_key, nil)
+      @base_url           = opts.fetch(:base_url, DEFAULT_URL)
+      @customer           = opts.fetch(:customer, nil)
+      @oldpurge           = opts.fetch(:use_old_purge_method, false)
+      @password           = opts.fetch(:password, nil)
+      @user               = opts.fetch(:user, nil)
+      @debug              = opts.fetch(:debug, nil)
+      @thread_http_client = Concurrent::ThreadLocalVar.new { build_http_client }
 
       return self unless fully_authed?
 
@@ -114,7 +106,25 @@ class Fastly
       JSON.parse(resp.body)
     end
 
+    def http
+      @thread_http_client.value
+    end
+
     private
+
+    def build_http_client
+      uri      = URI.parse(base_url)
+      net_http = Net::HTTP.new(uri.host, uri.port, :ENV, nil, nil, nil)
+
+      # handle TLS connections outside of development
+      net_http.verify_mode = OpenSSL::SSL::VERIFY_PEER
+      net_http.use_ssl     = uri.scheme.downcase == 'https'
+
+      # debug http interactions if specified
+      net_http.set_debug_output(debug) if debug
+
+      net_http
+    end
 
     def post_and_put(method, path, params = {})
       extras = params.delete(:headers) || {}
